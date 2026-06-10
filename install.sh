@@ -33,7 +33,7 @@ ENV_FILE="${CONFIG_DIR}/.env"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 SYSTEMD_DIR="/etc/systemd/system"
 SELF_BIN="/usr/local/bin/coinwings"
-PORT_DEFAULT="12345"
+PORT_DEFAULT="18080"
 
 # ─────────────────────────── 输出辅助 ───────────────────────────
 c_reset=$'\033[0m'; c_red=$'\033[31m'; c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_cyn=$'\033[36m'; c_bold=$'\033[1m'
@@ -126,13 +126,13 @@ services:
     volumes:
       - /etc/coinwings-spread/certs:/certs:ro
     ports:
-      - "${PORT:-12345}:12345"
+      - "${PORT:-18080}:${PORT:-18080}"
 YAML
   ok "写入 ${COMPOSE_FILE}"
 }
 
 # 自签 TLS 证书（无需域名，浏览器会提示不安全，可接受）。幂等：已存在则复用。
-# 由后端程序直接加载（TLS_CERT_FILE/TLS_KEY_FILE），在 12345 端口对外提供 HTTPS。
+# 由后端程序直接加载（TLS_CERT_FILE/TLS_KEY_FILE），在 18080 端口对外提供 HTTPS。
 gen_self_signed_cert() {
   local ip="$1" dir="${CONFIG_DIR}/certs"
   mkdir -p "$dir"
