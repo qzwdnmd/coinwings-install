@@ -72,12 +72,12 @@ ensure_docker() {
 
 registry_login() {
   if [ "$PULL_TOKEN" = "__PULL_TOKEN__" ]; then
-    warn "未注入私有镜像凭据（开发模式）。若 pull 失败请先 docker login ${REGISTRY}"
+    log "镜像源：公开镜像，匿名拉取（无需登录）"
     return 0
   fi
-  log "登录私有镜像仓库 ${REGISTRY} …"
+  log "正在登录镜像仓库 ${REGISTRY} …"
   echo "$PULL_TOKEN" | docker login "$REGISTRY" -u "$PULL_USER" --password-stdin >/dev/null \
-    || die "镜像仓库登录失败"
+    || die "镜像仓库登录失败，请检查网络或访问凭据"
   ok "镜像仓库登录成功"
 }
 
@@ -120,10 +120,33 @@ services:
       - /etc/coinwings-spread/.env
     environment:
       DATABASE_HOST: postgres
+      # 后端内置 HTTPS：加载下方挂载的自签证书（程序检测到证书即用 https 对外）
+      TLS_CERT_FILE: /certs/cert.pem
+      TLS_KEY_FILE: /certs/key.pem
+    volumes:
+      - /etc/coinwings-spread/certs:/certs:ro
     ports:
       - "${PORT:-12345}:12345"
 YAML
   ok "写入 ${COMPOSE_FILE}"
+}
+
+# 自签 TLS 证书（无需域名，浏览器会提示不安全，可接受）。幂等：已存在则复用。
+# 由后端程序直接加载（TLS_CERT_FILE/TLS_KEY_FILE），在 12345 端口对外提供 HTTPS。
+gen_self_signed_cert() {
+  local ip="$1" dir="${CONFIG_DIR}/certs"
+  mkdir -p "$dir"
+  if [ -s "$dir/cert.pem" ] && [ -s "$dir/key.pem" ]; then
+    ok "TLS 证书已存在，复用"
+    return 0
+  fi
+  log "生成自签 TLS 证书（CN=${ip}）…"
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$dir/key.pem" -out "$dir/cert.pem" \
+    -days 3650 -subj "/CN=${ip}" -addext "subjectAltName=IP:${ip}" >/dev/null 2>&1 \
+    || die "生成自签证书失败（请确认已安装 openssl）"
+  chmod 644 "$dir/cert.pem"; chmod 644 "$dir/key.pem"
+  ok "已生成自签 TLS 证书（10 年有效）"
 }
 
 write_env_if_absent() {
@@ -259,8 +282,9 @@ wait_healthy() {
   log "等待服务就绪 …"
   local port; port="$(grep -E '^PORT=' "$ENV_FILE" | cut -d= -f2)"; port="${port:-$PORT_DEFAULT}"
   for _ in $(seq 1 30); do
-    if curl -fsS --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1 \
-       || curl -fsS --max-time 2 "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
+    # 后端为自签 HTTPS，-k 跳过证书校验；兼容仍是 HTTP 的旧镜像
+    if curl -fsSk --max-time 2 "https://127.0.0.1:${port}/health" >/dev/null 2>&1 \
+       || curl -fsS  --max-time 2 "http://127.0.0.1:${port}/health"  >/dev/null 2>&1; then
       ok "服务已响应（:${port}）"; return 0
     fi
     sleep 2
@@ -278,27 +302,30 @@ print_panel() {
   printf '%s\n' "${c_grn}${c_bold}║              Coinwings 部署完成 🎉                        ║${c_reset}"
   printf '%s\n' "${c_grn}${c_bold}╚══════════════════════════════════════════════════════════╝${c_reset}"
   printf '\n'
-  printf '  %s  http://%s:%s\n'      "${c_bold}访问地址${c_reset}" "$ip" "$port"
+  printf '  %s  https://%s:%s\n'     "${c_bold}访问地址${c_reset}" "$ip" "$port"
   printf '  %s  %s\n'                "${c_bold}访问令牌${c_reset}" "$token"
   printf '  %s  %s\n'                "${c_bold}配置文件${c_reset}" "$ENV_FILE"
   printf '  %s  %s\n'                "${c_bold}数据目录${c_reset}" "${DATA_DIR}/pgdata"
   printf '\n'
-  warn "请立即备份 ${ENV_FILE}（含 ENCRYPTION_KEY，丢失将无法解密已保存的交易所 Key）"
-  printf '  常用命令： coinwings status | logs | upgrade | restart | token | uninstall\n\n'
+  warn "首次访问浏览器会提示「证书不安全」(自签证书)，点「高级 → 继续前往」即可"
+  warn "如公网打不开：请到云服务器控制台「安全组 / 防火墙」放行 TCP ${port} 端口"
+  warn "请立即备份配置文件（含加密主密钥，丢失将无法解密已保存的交易所 API Key）"
+  printf '  管理命令： coinwings status | logs | upgrade | restart | token | uninstall\n\n'
 }
 
 do_install() {
   require_root
-  log "开始安装 Coinwings 策略后端 …"
+  log "正在安装 Coinwings 交易策略服务 …"
   detect_arch
   ensure_docker
   registry_login
   mkdir -p "$CONFIG_DIR" "${DATA_DIR}/pgdata"
+  gen_self_signed_cert "$(public_ip)"
   write_compose
   write_env_if_absent
   write_systemd
   install_self_cli
-  log "拉取镜像并启动 …"
+  log "正在拉取镜像并启动服务（首次拉取较慢，请耐心等待）…"
   systemctl enable coinwings.service >/dev/null 2>&1 || true
   compose pull
   systemctl restart coinwings.service
