@@ -14,6 +14,8 @@ set -euo pipefail
 REGISTRY="${COINWINGS_REGISTRY:-ghcr.io}"
 IMAGE_REPO="${COINWINGS_IMAGE_REPO:-ghcr.io/qzwdnmd/spread-engine}"
 IMAGE_TAG="${COINWINGS_IMAGE_TAG:-latest}"
+# 本脚本的托管地址：管道安装（curl | bash）无本地文件时，据此重新下载安装为管理 CLI。
+SELF_URL="${COINWINGS_INSTALL_URL:-https://raw.githubusercontent.com/qzwdnmd/coinwings-install/refs/heads/main/install.sh}"
 # 只读 pull 凭据：私有镜像时把下面两行占位替换为真实只读 token（仅能 pull，不能 push）。
 # 注意：本脚本若托管在 公开 GitHub 仓库（raw.githubusercontent.com），切勿在此内嵌真实 token——
 #       请改为 GHCR 镜像包设 public 走匿名拉取（防泄漏仍由「镜像内无源码」兜底）。
@@ -230,18 +232,25 @@ UNIT
 }
 
 install_self_cli() {
-  # 把自身复制为管理 CLI；优先用脚本真实路径，管道执行（无 $0 文件）时回退到 /proc/self
+  # 把自身安装为管理 CLI。来源依次尝试：
+  #   1) 本地脚本文件（bash install.sh 方式，BASH_SOURCE 是真实文件）
+  #   2) 从托管地址重新下载（curl | bash 管道方式，无本地文件——这是文档主推方式）
   local src=""
   if [ -f "${BASH_SOURCE[0]:-}" ]; then src="${BASH_SOURCE[0]}"; fi
   if [ -n "$src" ] && [ -f "$src" ]; then
     cp "$src" "$SELF_BIN"
   else
-    cp "/proc/self/fd/255" "$SELF_BIN" 2>/dev/null || cp_from_stdin
+    log "管道安装无本地脚本，从 ${SELF_URL} 下载管理 CLI …"
+    curl -fsSL "$SELF_URL" -o "$SELF_BIN" 2>/dev/null || true
   fi
-  chmod 755 "$SELF_BIN"
-  ok "安装管理命令：coinwings"
+  # 仅在文件确实写入后才 chmod，避免管道下载失败时 chmod 报错触发 set -e 中断整个安装
+  if [ -s "$SELF_BIN" ]; then
+    chmod 755 "$SELF_BIN"
+    ok "安装管理命令：coinwings"
+  else
+    warn "未能安装 coinwings CLI（不影响服务运行）。可手动：curl -fsSL ${SELF_URL} -o ${SELF_BIN} && chmod 755 ${SELF_BIN}"
+  fi
 }
-cp_from_stdin() { warn "无法定位脚本源，跳过 CLI 安装（可手动保存为 /usr/local/bin/coinwings）"; }
 
 # ─────────────────────────── 动作 ───────────────────────────
 compose() { docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"; }
